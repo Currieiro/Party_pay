@@ -1,946 +1,542 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
-import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Download, Plus, RefreshCw, Upload } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1"
+    />
+    <meta name="description" content="PartiPay – App de compartir gastos" />
+    <title>PartiPay (1 archivo)</title>
+    <style>
+      :root { --gap: 12px; --radius: 12px; --border: #e5e7eb; --muted:#6b7280; }
+      body{font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial,"Apple Color Emoji","Segoe UI Emoji";margin:0;background:#fafafa;color:#111}
+      .container{max-width: 960px; margin: 24px auto; padding: 0 16px;}
+      h1{font-size:28px;margin:0 0 8px}
+      .muted{color:var(--muted)}
+      .grid{display:grid; gap: var(--gap)}
+      .grid-2{grid-template-columns: repeat(2, minmax(0,1fr))}
+      @media (max-width: 860px){ .grid-2{grid-template-columns: 1fr} }
+      .card{background:#fff;border:1px solid var(--border);border-radius:var(--radius)}
+      .card-h{padding:16px 16px 0}
+      .card-c{padding:16px}
+      .row{display:flex; gap:var(--gap); align-items:center}
+      input, select, textarea, button{font:inherit}
+      input, select, textarea{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:#fff}
+      table{width:100%;border-collapse:collapse}
+      th, td{padding:8px 10px;border-bottom:1px solid #eee;text-align:left}
+      .right{text-align:right}
+      .btn{padding:10px 12px;border:1px solid var(--border);background:#fff;border-radius:10px;cursor:pointer}
+      .btn.primary{background:#111;color:#fff;border-color:#111}
+      .btn.danger{border-color:#ef4444;color:#ef4444}
+      .bad{color:#b91c1c}
+      .good{color:#065f46}
+      .chips{display:flex; gap:6px; flex-wrap:wrap}
+      .chip{border:1px solid var(--border);padding:6px 8px;border-radius:999px}
+      .small{font-size:12px}
+      /* modal */
+      .overlay{position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:flex-start; justify-content:center; padding:48px 16px; z-index:10}
+      .modal{max-width:720px; width:100%}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
 
-// ------------------------- TYPES -------------------------
-type Participant = {
-  id: string;
-  name: string;
-};
+    <!-- React 18 UMD + Babel para JSX en el navegador (solo para demo). -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-type Expense = {
-  id: string;
-  description: string;
-  amount: number; // importe base (sin propina)
-  payerMode: "single" | "multi";
-  payerId?: string; // si single
-  payerSplits?: { payerId: string; amount: number }[]; // si multi (suma = amount)
-  tipAmount?: number; // propina opcional
-  tipPayerId?: string; // quién puso la propina (puede ser distinto del pagador principal)
-  participantIds: string[]; // quienes consumen (reparte amount + tip)
-  date: string; // ISO date
-  note?: string;
-};
+    <!-- Tu app completa en JSX -->
+    <script type="text/babel">
+      const { useState, useMemo, useEffect } = React;
 
-type EventData = {
-  id: string; // slug
-  name: string;
-  currency: string;
-  participants: Participant[];
-  expenses: Expense[];
-  createdAt: string;
-};
-
-// ------------------------- UTILS -------------------------
-const currencies = ["EUR", "USD", "GBP", "MXN", "COP", "ARS", "CLP", "PEN"] as const;
-
-type Currency = (typeof currencies)[number];
-
-function slugify(s: string) {
-  return s
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
-}
-
-function fmt(amount: number, currency: string) {
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(
-      amount
-    );
-  } catch {
-    return `${amount.toFixed(2)} ${currency}`;
-  }
-}
-
-function uid(prefix = "id") {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function computeBalances(event: EventData) {
-  const map: Record<string, number> = {};
-  event.participants.forEach((p) => (map[p.id] = 0));
-
-  for (const e of event.expenses) {
-    const involved =
-      e.participantIds.length > 0
-        ? e.participantIds
-        : event.participants.map((p) => p.id);
-
-    const total = (e.amount || 0) + (e.tipAmount || 0);
-    const share = total / involved.length;
-
-    // Créditos a quien paga el importe base
-    if (e.payerMode === "multi" && e.payerSplits?.length) {
-      for (const s of e.payerSplits) {
-        map[s.payerId] = (map[s.payerId] || 0) + s.amount;
+      // --------- Utils
+      const currencies = ["EUR","USD","GBP","MXN","COP","ARS","CLP","PEN"];
+      const uid = (p="id") => `${p}_${Math.random().toString(36).slice(2,10)}`;
+      const todayISO = () => new Date().toISOString().slice(0,10);
+      const slugify = s => s.toLowerCase().trim().replace(/[^a-z0-9]+/g,"-").replace(/(^-|-$)/g,"");
+      function fmt(amount, currency){
+        try { return new Intl.NumberFormat(undefined, {style:"currency", currency}).format(amount); }
+        catch { return amount.toFixed(2)+" "+currency; }
       }
-    } else if (e.payerId) {
-      map[e.payerId] = (map[e.payerId] || 0) + (e.amount || 0);
-    }
-
-    // Crédito de la propina (si existe) a quien la puso
-    if (e.tipAmount && e.tipAmount > 0 && e.tipPayerId) {
-      map[e.tipPayerId] = (map[e.tipPayerId] || 0) + e.tipAmount;
-    }
-
-    // Débitos a quienes consumen (importe + propina proporcional)
-    for (const pid of involved) {
-      map[pid] = (map[pid] || 0) - share;
-    }
-  }
-
-  for (const k in map) {
-    map[k] = Math.round(map[k] * 100) / 100;
-  }
-  return map; // positivo -> debe recibir; negativo -> debe pagar
-}
-
-function settleDebts(balances: Record<string, number>) {
-  const debtors: { id: string; amount: number }[] = [];
-  const creditors: { id: string; amount: number }[] = [];
-  Object.entries(balances).forEach(([id, amt]) => {
-    if (amt < -0.009) debtors.push({ id, amount: -amt });
-    else if (amt > 0.009) creditors.push({ id, amount: amt });
-  });
-  debtors.sort((a, b) => b.amount - a.amount);
-  creditors.sort((a, b) => b.amount - a.amount);
-  const txs: { from: string; to: string; amount: number }[] = [];
-  let i = 0,
-    j = 0;
-  while (i < debtors.length && j < creditors.length) {
-    const d = debtors[i];
-    const c = creditors[j];
-    const pay = Math.min(d.amount, c.amount);
-    txs.push({ from: d.id, to: c.id, amount: Math.round(pay * 100) / 100 });
-    d.amount -= pay;
-    c.amount -= pay;
-    if (d.amount <= 0.009) i++;
-    if (c.amount <= 0.009) j++;
-  }
-  return txs;
-}
-
-function download(filename: string, content: string, mime = "application/json") {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([content], { type: mime }));
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
-// ------------------------- MAIN APP -------------------------
-export default function App() {
-  const [step, setStep] = useState<"setup" | "participants" | "event">("setup");
-  const [eventName, setEventName] = useState("");
-  const [currency, setCurrency] = useState<Currency>("EUR");
-  const [numParticipants, setNumParticipants] = useState(2);
-  const [participantsDraft, setParticipantsDraft] = useState<string[]>([]);
-  const [event, setEvent] = useState<EventData | null>(null);
-  const [openExpense, setOpenExpense] = useState(false);
-
-  // load from localStorage by last used event
-  useEffect(() => {
-    const lastKey = localStorage.getItem("partipay:last");
-    if (lastKey) {
-      const raw = localStorage.getItem(lastKey);
-      if (raw) {
-        try {
-          const parsed: EventData = JSON.parse(raw);
-          setEvent(parsed);
-          setStep("event");
-          setEventName(parsed.name);
-          setCurrency((parsed.currency as Currency) || "EUR");
-        } catch {}
+      function download(filename, content, mime="application/json"){
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([content], {type: mime}));
+        a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
       }
-    }
-  }, []);
 
-  // persist event
-  useEffect(() => {
-    if (event) {
-      const key = `partipay:${event.id}`;
-      localStorage.setItem(key, JSON.stringify(event));
-      localStorage.setItem("partipay:last", key);
-    }
-  }, [event]);
+      // --------- Cálculos
+      function computeBalances(event){
+        const map = {};
+        event.participants.forEach(p => map[p.id] = 0);
 
-  const balances = useMemo(() => (event ? computeBalances(event) : {}), [event]);
-  const settlements = useMemo(
-    () => (event ? settleDebts(balances) : []),
-    [event, balances]
-  );
+        for(const e of event.expenses){
+          const involved = e.participantIds.length>0 ? e.participantIds : event.participants.map(p=>p.id);
+          const total = (e.amount||0) + (e.tipAmount||0);
+          const share = total / involved.length;
 
-  // ----------------------- SETUP -----------------------
-  const handleSetupNext = () => {
-    const n = Math.max(1, Math.min(20, numParticipants));
-    setParticipantsDraft(Array.from({ length: n }, (_, i) => `P${i + 1}`));
-    setStep("participants");
-  };
+          if(e.payerMode === "multi" && e.payerSplits?.length){
+            for(const s of e.payerSplits){
+              map[s.payerId] = (map[s.payerId]||0) + s.amount;
+            }
+          } else if(e.payerId){
+            map[e.payerId] = (map[e.payerId]||0) + (e.amount||0);
+          }
 
-  const handleCreateEvent = () => {
-    const cleanNames = participantsDraft.map((s) => s.trim()).filter(Boolean);
-    if (!eventName.trim()) return alert("Ponle nombre al evento ✍️");
-    if (cleanNames.length < 1) return alert("Necesitas al menos 1 participante");
-    const parts: Participant[] = cleanNames.map((name, idx) => ({
-      id: uid(`p${idx + 1}`),
-      name,
-    }));
-    const id = slugify(eventName) || `evento-${Date.now()}`;
-    const ev: EventData = {
-      id,
-      name: eventName.trim(),
-      currency,
-      participants: parts,
-      expenses: [],
-      createdAt: new Date().toISOString(),
-    };
-    setEvent(ev);
-    setStep("event");
-  };
+          if(e.tipAmount && e.tipAmount>0 && e.tipPayerId){
+            map[e.tipPayerId] = (map[e.tipPayerId]||0) + e.tipAmount;
+          }
 
-  const resetAll = () => {
-    if (!event) return;
-    if (confirm("¿Seguro que quieres borrar todos los gastos?")) {
-      setEvent({ ...event, expenses: [] });
-    }
-  };
-
-  const exportJSON = () => {
-    if (!event) return;
-    download(`${event.id}.json`, JSON.stringify(event, null, 2));
-  };
-
-  const exportCSV = () => {
-  if (!event) return;
-  const rows = [
-    [
-      "date",
-      "description",
-      "payerMode",
-      "payer",
-      "payerSplits",
-      "amount",
-      "tipAmount",
-      "tipPayer",
-      "participants",
-    ],
-    ...event.expenses.map((e) => {
-      const payerName = e.payerId
-        ? (event.participants.find((p) => p.id === e.payerId)?.name || "")
-        : "";
-      const splits = (e.payerSplits || [])
-        .map((s) => {
-          const n = event.participants.find((p) => p.id === s.payerId)?.name || "";
-          return n + ":" + s.amount.toFixed(2);
-        })
-        .join("|");
-      const tipPayer = e.tipPayerId
-        ? (event.participants.find((p) => p.id === e.tipPayerId)?.name || "")
-        : "";
-      const participantsNames = e.participantIds
-        .map((pid) => event.participants.find((p) => p.id === pid)?.name)
-        .join("|");
-      // Escapar comillas dobles para CSV correctamente: " -> ""
-      const desc = e.description || "";
-      const safeDesc = '"' + desc.replace(/"/g, '""') + '"';
-      return [
-        e.date,
-        safeDesc,
-        e.payerMode,
-        payerName,
-        splits,
-        e.amount.toFixed(2),
-        (e.tipAmount || 0).toFixed(2),
-        tipPayer,
-        participantsNames,
-      ];
-    }),
-  ];
-  const csv = rows.map((r) => r.join(",")).join("
-");
-  download(event.id + ".csv", csv, "text/csv");
-};
-
-  const importJSON = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const data = JSON.parse(String(reader.result));
-        if (!data || !data.participants || !data.expenses)
-          throw new Error("Formato no válido");
-        setEvent(data);
-        setStep("event");
-        setEventName(data.name || "");
-        setCurrency((data.currency as Currency) || "EUR");
-      } catch (err: any) {
-        alert("No se pudo importar: " + err?.message);
+          for(const pid of involved){
+            map[pid] = (map[pid]||0) - share;
+          }
+        }
+        Object.keys(map).forEach(k => map[k] = Math.round(map[k]*100)/100);
+        return map;
       }
-    };
-    reader.readAsText(file);
-  };
 
-  // ----------------------- RENDER -----------------------
-  return (
-    <div className="min-h-screen bg-neutral-50 p-4 md:p-8">
-      <div className="mx-auto max-w-5xl">
-        <motion.h1
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-3xl md:text-4xl font-bold tracking-tight"
-        >
-          PartiPay
-          <span className="text-neutral-500 font-light"> / comparte gastos sin dramas</span>
-        </motion.h1>
-        <p className="text-neutral-600 mt-1 mb-6">
-          Crea un evento, añade participantes y deja que las mates hagan magia. Nada de
-          "yo te invité al café"… bueno, salvo que el café sea espectacular ☕️.
-        </p>
+      function settleDebts(balances){
+        const debtors = [], creditors = [];
+        Object.entries(balances).forEach(([id, amt])=>{
+          if(amt < -0.009) debtors.push({id, amount:-amt});
+          else if(amt > 0.009) creditors.push({id, amount:amt});
+        });
+        debtors.sort((a,b)=>b.amount-a.amount);
+        creditors.sort((a,b)=>b.amount-a.amount);
+        const txs = [];
+        let i=0,j=0;
+        while(i<debtors.length && j<creditors.length){
+          const d=debtors[i], c=creditors[j];
+          const pay = Math.min(d.amount, c.amount);
+          txs.push({ from:d.id, to:c.id, amount: Math.round(pay*100)/100 });
+          d.amount -= pay; c.amount -= pay;
+          if(d.amount <= 0.009) i++;
+          if(c.amount <= 0.009) j++;
+        }
+        return txs;
+      }
 
-        {step !== "event" && (
-          <div className="grid md:grid-cols-2 gap-6">
-            <Card className="rounded-2xl shadow-sm">
-              <CardHeader>
-                <CardTitle>1) Crea tu Evento</CardTitle>
-                <CardDescription>
-                  Nombre y moneda. Fácil, como repartir croquetas.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Nombre del evento</Label>
-                  <Input
-                    placeholder="P. ej., Fin de semana en Trives"
-                    value={eventName}
-                    onChange={(e) => setEventName(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Moneda</Label>
-                  <Select value={currency} onValueChange={(v) => setCurrency(v as Currency)}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecciona moneda" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {currencies.map((c) => (
-                        <SelectItem key={c} value={c}>
-                          {c}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </CardContent>
-            </Card>
+      // --------- App
+      function App(){
+        const [step, setStep] = useState("setup"); // 'setup' | 'participants' | 'event'
+        const [eventName, setEventName] = useState("");
+        const [currency, setCurrency] = useState("EUR");
+        const [numParticipants, setNumParticipants] = useState(2);
+        const [participantsDraft, setParticipantsDraft] = useState([]);
+        const [event, setEvent] = useState(null);
+        const [openExpense, setOpenExpense] = useState(false);
 
-            {step === "setup" && (
-              <Card className="rounded-2xl shadow-sm">
-                <CardHeader>
-                  <CardTitle>2) ¿Cuántos participantes?</CardTitle>
-                  <CardDescription>Prometo no juzgar si sois 2… o 20.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label>Número de participantes</Label>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={20}
-                      value={numParticipants}
-                      onChange={(e) =>
-                        setNumParticipants(parseInt(e.target.value || "1"))
-                      }
-                    />
+        // Carga desde localStorage
+        useEffect(()=>{
+          const lastKey = localStorage.getItem("partipay:last");
+          if(lastKey){
+            const raw = localStorage.getItem(lastKey);
+            if(raw){
+              try{
+                const parsed = JSON.parse(raw);
+                setEvent(parsed); setStep("event");
+                setEventName(parsed.name);
+                setCurrency(parsed.currency || "EUR");
+              }catch{}
+            }
+          }
+        },[]);
+
+        // Persistencia
+        useEffect(()=>{
+          if(event){
+            const key = `partipay:${event.id}`;
+            localStorage.setItem(key, JSON.stringify(event));
+            localStorage.setItem("partipay:last", key);
+          }
+        }, [event]);
+
+        const balances = useMemo(()=> event ? computeBalances(event) : {}, [event]);
+        const settlements = useMemo(()=> event ? settleDebts(balances) : [], [event, balances]);
+
+        // Setup
+        const handleSetupNext = () => {
+          const n = Math.max(1, Math.min(20, parseInt(numParticipants||1,10)));
+          setParticipantsDraft(Array.from({length:n}, (_,i)=>`P${i+1}`));
+          setStep("participants");
+        };
+
+        const handleCreateEvent = () => {
+          const cleanNames = participantsDraft.map(s=>s.trim()).filter(Boolean);
+          if(!eventName.trim()) return alert("Ponle nombre al evento ✍️");
+          if(cleanNames.length < 1) return alert("Necesitas al menos 1 participante");
+          const parts = cleanNames.map((name, idx)=> ({ id: uid(`p${idx+1}`), name }));
+          const id = slugify(eventName) || `evento-${Date.now()}`;
+          const ev = { id, name: eventName.trim(), currency, participants: parts, expenses: [], createdAt: new Date().toISOString() };
+          setEvent(ev); setStep("event");
+        };
+
+        const resetAll = () => {
+          if(!event) return;
+          if(confirm("¿Seguro que quieres borrar todos los gastos?")){
+            setEvent({ ...event, expenses: [] });
+          }
+        };
+
+        const exportJSON = () => {
+          if(!event) return;
+          download(`${event.id}.json`, JSON.stringify(event, null, 2));
+        };
+
+        const exportCSV = () => {
+          if(!event) return;
+          const rows = [
+            ["date","description","payerMode","payer","payerSplits","amount","tipAmount","tipPayer","participants"],
+            ...event.expenses.map(e=>{
+              const payerName = e.payerId ? (event.participants.find(p=>p.id===e.payerId)?.name || "") : "";
+              const splits = (e.payerSplits||[]).map(s=>{
+                const n = event.participants.find(p=>p.id===s.payerId)?.name || "";
+                return n+":"+s.amount.toFixed(2);
+              }).join("|");
+              const tipPayer = e.tipPayerId ? (event.participants.find(p=>p.id===e.tipPayerId)?.name || "") : "";
+              const participantsNames = e.participantIds.map(pid=>event.participants.find(p=>p.id===pid)?.name).join("|");
+              const safeDesc = '"' + (e.description||"").replace(/"/g,'""') + '"';
+              return [ e.date, safeDesc, e.payerMode, payerName, splits, e.amount.toFixed(2), (e.tipAmount||0).toFixed(2), tipPayer, participantsNames ];
+            })
+          ];
+          const csv = rows.map(r=>r.join(",")).join("\n");
+          download(event.id + ".csv", csv, "text/csv");
+        };
+
+        const importJSON = (file) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            try{
+              const data = JSON.parse(String(reader.result));
+              if(!data || !data.participants || !data.expenses) throw new Error("Formato no válido");
+              setEvent(data); setStep("event");
+              setEventName(data.name || ""); setCurrency(data.currency || "EUR");
+            }catch(err){ alert("No se pudo importar: " + (err?.message||err)); }
+          };
+          reader.readAsText(file);
+        };
+
+        return (
+          <div className="container">
+            <h1>PartiPay <span className="muted">/ comparte gastos sin dramas</span></h1>
+            <p className="muted">Crea un evento, añade participantes y deja que las mates hagan magia. Nada de "yo te invité al café"… salvo que el café sea espectacular ☕️.</p>
+
+            {step !== "event" && (
+              <div className="grid grid-2">
+                <div className="card">
+                  <div className="card-h"><h3>1) Crea tu Evento</h3><p className="muted small">Nombre y moneda.</p></div>
+                  <div className="card-c grid">
+                    <label>Nombre del evento
+                      <input placeholder="Fin de semana en Trives" value={eventName} onChange={e=>setEventName(e.target.value)}/>
+                    </label>
+                    <label>Moneda
+                      <select value={currency} onChange={e=>setCurrency(e.target.value)}>
+                        {currencies.map(c=> <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </label>
                   </div>
-                  <Button onClick={handleSetupNext} className="w-full">
-                    Continuar
-                  </Button>
-                </CardContent>
-              </Card>
+                </div>
+
+                {step === "setup" && (
+                  <div className="card">
+                    <div className="card-h"><h3>2) ¿Cuántos participantes?</h3><p className="muted small">Prometo no juzgar si sois 2… o 20.</p></div>
+                    <div className="card-c grid">
+                      <label>Número de participantes
+                        <input type="number" min={1} max={20} value={numParticipants} onChange={e=>setNumParticipants(e.target.value)}/>
+                      </label>
+                      <button className="btn primary" onClick={handleSetupNext}>Continuar</button>
+                    </div>
+                  </div>
+                )}
+
+                {step === "participants" && (
+                  <div className="card" style={{gridColumn:"1 / -1"}}>
+                    <div className="card-h"><h3>2) Nombres de participantes</h3><p className="muted small">Pon nombres reales o alias épicos.</p></div>
+                    <div className="card-c grid grid-2">
+                      {participantsDraft.map((name, idx)=> (
+                        <label key={idx}>Participante #{idx+1}
+                          <input value={name} onChange={e=> setParticipantsDraft(prev => prev.map((v,i)=> i===idx? e.target.value : v))}/>
+                        </label>
+                      ))}
+                      <div className="row" style={{justifyContent:"flex-end", gridColumn:"1 / -1"}}>
+                        <button className="btn" onClick={()=>setStep("setup")}>Volver</button>
+                        <button className="btn primary" onClick={handleCreateEvent}>Crear Evento</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
-            {step === "participants" && (
-              <Card className="rounded-2xl shadow-sm md:col-span-2">
-                <CardHeader>
-                  <CardTitle>2) Nombres de participantes</CardTitle>
-                  <CardDescription>
-                    Pon nombres reales o alias épicos. Kai cuenta si paga con ronroneos.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="grid md:grid-cols-2 gap-4">
-                  {participantsDraft.map((name, idx) => (
-                    <div className="space-y-2" key={idx}>
-                      <Label>Participante #{idx + 1}</Label>
-                      <Input
-                        value={name}
-                        onChange={(e) =>
-                          setParticipantsDraft((prev) =>
-                            prev.map((v, i) => (i === idx ? e.target.value : v))
+            {step === "event" && event && (
+              <div className="grid">
+                <div className="card">
+                  <div className="card-c row" style={{justifyContent:"space-between", alignItems:"center", flexWrap:"wrap"}}>
+                    <div>
+                      <div><strong>Evento:</strong> {event.name}</div>
+                      <div className="muted small">Moneda: {event.currency} • Participantes: {event.participants.length} • Gastos: {event.expenses.length}</div>
+                    </div>
+                    <div className="chips">
+                      <button className="btn primary" onClick={()=>setOpenExpense(true)}>Añadir gasto</button>
+                      <button className="btn" onClick={exportCSV}>Exportar CSV</button>
+                      <button className="btn" onClick={exportJSON}>Exportar JSON</button>
+                      <label className="btn">Importar
+                        <input type="file" accept="application/json" style={{display:"none"}} onChange={e=>{ const f=e.target.files?.[0]; if(f) importJSON(f); }}/>
+                      </label>
+                      <button className="btn danger" onClick={resetAll}>Reset</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-2">
+                  <div className="card">
+                    <div className="card-h"><h3>Balances</h3><p className="muted small">Positivo = te deben. Negativo = debes.</p></div>
+                    <div className="card-c">
+                      <table>
+                        <thead><tr><th>Participante</th><th className="right">Balance</th></tr></thead>
+                        <tbody>
+                          {event.participants.map(p=> (
+                            <tr key={p.id}>
+                              <td>{p.name}</td>
+                              <td className={"right "+((balances[p.id]||0)>=0? "good":"bad")}>{fmt(balances[p.id]||0, event.currency)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="card">
+                    <div className="card-h"><h3>Liquidaciones sugeridas</h3><p className="muted small">Mínimo de pagos.</p></div>
+                    <div className="card-c">
+                      {settlements.length === 0 ? (
+                        <p className="muted small">Todo en paz. Nadie le debe nada a nadie. ✨</p>
+                      ) : (
+                        <ul>
+                          {settlements.map((t, i)=>{
+                            const from = event.participants.find(p=>p.id===t.from)?.name;
+                            const to = event.participants.find(p=>p.id===t.to)?.name;
+                            return <li key={i}><strong>{from}</strong> → <strong>{to}</strong>: {fmt(t.amount, event.currency)}</li>
+                          })}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <div className="card-h"><h3>Gastos</h3><p className="muted small">Quién pagó qué y para quién.</p></div>
+                  <div className="card-c">
+                    {event.expenses.length === 0 ? (
+                      <p className="muted small">Aún no hay gastos. ¡Estrena el botón "Añadir gasto"! 💸</p>
+                    ) : (
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Fecha</th><th>Descripción</th><th>Pagadores</th><th className="right">Importe</th><th>Propina</th><th>Para</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {event.expenses.map(e=>{
+                            const payerLabel = e.payerMode==='single'
+                              ? event.participants.find(p=>p.id===e.payerId)?.name
+                              : (e.payerSplits||[]).map(s=>`${event.participants.find(p=>p.id===s.payerId)?.name} (${fmt(s.amount, event.currency)})`).join(", ");
+                            const tipLabel = e.tipAmount
+                              ? `${fmt(e.tipAmount, event.currency)} — ${event.participants.find(p=>p.id===e.tipPayerId)?.name}`
+                              : "-";
+                            const names = e.participantIds.map(pid=>event.participants.find(p=>p.id===pid)?.name).join(", ");
+                            return (
+                              <tr key={e.id}>
+                                <td>{e.date}</td>
+                                <td>{e.description}</td>
+                                <td>{payerLabel}</td>
+                                <td className="right">{fmt(e.amount, event.currency)}</td>
+                                <td>{tipLabel}</td>
+                                <td>{names}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+
+                {openExpense && (
+                  <AddExpenseDialog
+                    event={event}
+                    setEvent={setEvent}
+                    onClose={()=>setOpenExpense(false)}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      function AddExpenseDialog({ event, setEvent, onClose }){
+        const [amount, setAmount] = useState("");
+        const [tip, setTip] = useState("");
+        const [desc, setDesc] = useState("");
+        const [date, setDate] = useState(todayISO());
+        const [payerMode, setPayerMode] = useState("single"); // 'single' | 'multi'
+        const [payerId, setPayerId] = useState(event.participants[0]?.id || "");
+        const [tipPayerId, setTipPayerId] = useState(event.participants[0]?.id || "");
+        const [payerSplits, setPayerSplits] = useState([]); // [{payerId,amount}]
+        const [selected, setSelected] = useState(event.participants.map(p=>p.id));
+        const [note, setNote] = useState("");
+
+        const base = parseFloat((amount||"0").replace(",", ".")) || 0;
+        const tipVal = parseFloat((tip||"0").replace(",", ".")) || 0;
+        const total = base + tipVal; 
+        const perHead = selected.length>0 ? total/selected.length : 0;
+
+        const addSplitRow = () => setPayerSplits(prev=>[...prev, { payerId: event.participants[0]?.id || "", amount: "" }]);
+        const removeSplitRow = (idx) => setPayerSplits(prev=>prev.filter((_,i)=>i!==idx));
+
+        const toggleSelectAll = (all) => setSelected(all ? event.participants.map(p=>p.id) : []);
+        const toggleParticipant = (pid) => setSelected(prev => prev.includes(pid) ? prev.filter(x=>x!==pid) : [...prev, pid]);
+
+        const submit = () => {
+          if(!(base>0)) return alert("Pon un importe mayor que 0");
+          if(!desc.trim()) return alert("Describe el gasto");
+          if(selected.length===0) return alert("Selecciona al menos 1 participante");
+
+          let mode = payerMode;
+          let payerIdValue = undefined;
+          let payerSplitsValue = undefined;
+
+          if(mode==='single'){
+            payerIdValue = payerId;
+          }else{
+            const parsed = payerSplits.map(r=>({ payerId: r.payerId, amount: parseFloat((r.amount||"0").replace(",", ".")) || 0 }));
+            const sum = parsed.reduce((a,b)=>a+b.amount,0);
+            if(Math.abs(sum - base) > 0.01) return alert(`Las aportaciones (${sum.toFixed(2)}) deben sumar el importe base (${base.toFixed(2)})`);
+            if(parsed.some(s=>!s.payerId || s.amount<=0)) return alert("Revisa filas: importes > 0 y pagador seleccionado.");
+            payerSplitsValue = parsed;
+          }
+
+          const expense = {
+            id: uid("e"),
+            description: desc.trim(),
+            amount: Math.round(base*100)/100,
+            payerMode: mode,
+            payerId: payerIdValue,
+            payerSplits: payerSplitsValue,
+            tipAmount: Math.round(tipVal*100)/100 || undefined,
+            tipPayerId: tipVal>0 ? tipPayerId : undefined,
+            participantIds: [...selected],
+            date,
+            note: note.trim() || undefined,
+          };
+          setEvent({ ...event, expenses: [...event.expenses, expense] });
+          onClose();
+        };
+
+        return (
+          <div className="overlay" onClick={(e)=>{ if(e.target===e.currentTarget) onClose(); }}>
+            <div className="modal card" onClick={(e)=>e.stopPropagation()}>
+              <div className="card-h row" style={{justifyContent:"space-between"}}>
+                <h3>Nuevo gasto</h3>
+                <button className="btn" onClick={onClose}>Cerrar</button>
+              </div>
+              <div className="card-c grid grid-2">
+                <label>Importe ({event.currency})
+                  <input inputMode="decimal" placeholder="0,00" value={amount} onChange={e=>setAmount(e.target.value)} />
+                </label>
+                <label>Propina ({event.currency})
+                  <input inputMode="decimal" placeholder="0,00" value={tip} onChange={e=>setTip(e.target.value)} />
+                </label>
+                <label>Fecha
+                  <input type="date" value={date} onChange={e=>setDate(e.target.value)} />
+                </label>
+                <label style={{gridColumn:"1 / -1"}}>Descripción
+                  <input placeholder="Cena, peajes, cafés, entradas…" value={desc} onChange={e=>setDesc(e.target.value)} />
+                </label>
+
+                <div style={{gridColumn:"1 / -1"}}>
+                  <div className="row" style={{gap:16}}>
+                    <label className="row"><input type="radio" checked={payerMode==='single'} onChange={()=>setPayerMode('single')} /> Una persona</label>
+                    <label className="row"><input type="radio" checked={payerMode==='multi'} onChange={()=>setPayerMode('multi')} /> Varios (repartido)</label>
+                  </div>
+
+                  {payerMode==='single' ? (
+                    <label>Pagó
+                      <select value={payerId} onChange={e=>setPayerId(e.target.value)}>
+                        {event.participants.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </label>
+                  ) : (
+                    <div className="grid" style={{gap:8}}>
+                      <div className="row" style={{justifyContent:"space-between"}}>
+                        <strong>Pagadores y aportes (deben sumar {fmt(parseFloat(amount||"0")||0, event.currency)})</strong>
+                        <button className="btn" onClick={addSplitRow}>Añadir pagador</button>
+                      </div>
+                      {payerSplits.length===0 && <p className="small muted">Añade filas con cada persona que puso dinero.</p>}
+                      {payerSplits.map((row, idx)=> (
+                        <div key={idx} className="row" style={{gap:8}}>
+                          <select value={row.payerId} onChange={e=> setPayerSplits(prev=> prev.map((r,i)=> i===idx? {...r, payerId: e.target.value}: r))}>
+                            {event.participants.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
+                          </select>
+                          <input style={{width:160}} inputMode="decimal" placeholder="0,00" value={row.amount} onChange={e=> setPayerSplits(prev=> prev.map((r,i)=> i===idx? {...r, amount: e.target.value}: r))} />
+                          <button className="btn danger" onClick={()=>removeSplitRow(idx)}>×</button>
+                        </div>
+                      ))}
+                      <p className="small" style={{color: Math.abs((payerSplits.reduce((a,b)=>a+(parseFloat((b.amount||"0").replace(",", "."))||0),0)) - (parseFloat((amount||"0").replace(",", "."))||0)) < 0.01 ? '#065f46' : '#b91c1c'}}>
+                        Suma actual: {
+                          fmt(
+                            payerSplits.reduce((a,b)=>a+(parseFloat((b.amount||"0").replace(",", "."))||0),0),
+                            event.currency
                           )
                         }
-                      />
-                    </div>
-                  ))}
-                  <div className="md:col-span-2 flex gap-2 justify-end">
-                    <Button variant="secondary" onClick={() => setStep("setup")}>Volver</Button>
-                    <Button onClick={handleCreateEvent}>Crear Evento</Button>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-          </div>
-        )}
-
-        {step === "event" && event && (
-          <AnimatePresence>
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              className="space-y-6"
-            >
-              <Card className="rounded-2xl">
-                <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-                  <div>
-                    <CardTitle className="flex items-center gap-2">
-                      Evento: <span className="font-semibold">{event.name}</span>
-                    </CardTitle>
-                    <CardDescription>
-                      Moneda: {event.currency} • Participantes: {event.participants.length} • Gastos: {event.expenses.length}
-                    </CardDescription>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <AddExpenseDialog
-                      event={event}
-                      setEvent={setEvent}
-                      open={openExpense}
-                      setOpen={setOpenExpense}
-                    />
-                    <Button variant="outline" onClick={exportCSV} title="Exportar CSV">
-                      <Download className="h-4 w-4 mr-2" />CSV
-                    </Button>
-                    <Button variant="outline" onClick={exportJSON} title="Exportar JSON">
-                      <Download className="h-4 w-4 mr-2" />JSON
-                    </Button>
-                    <label className="inline-flex items-center gap-2 px-3 py-2 rounded-md border text-sm cursor-pointer hover:bg-neutral-50">
-                      <Upload className="h-4 w-4" />
-                      Importar
-                      <input
-                        type="file"
-                        accept="application/json"
-                        className="hidden"
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (f) importJSON(f);
-                        }}
-                      />
-                    </label>
-                    <Button variant="destructive" onClick={resetAll} title="Borrar todos los gastos">
-                      <RefreshCw className="h-4 w-4 mr-2" />Reset
-                    </Button>
-                  </div>
-                </CardHeader>
-              </Card>
-
-              <div className="grid md:grid-cols-2 gap-6">
-                <Card className="rounded-2xl">
-                  <CardHeader>
-                    <CardTitle>Balances</CardTitle>
-                    <CardDescription>
-                      Positivo = te deben. Negativo = debes.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Participante</TableHead>
-                          <TableHead className="text-right">Balance</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {event.participants.map((p) => (
-                          <TableRow key={p.id}>
-                            <TableCell>{p.name}</TableCell>
-                            <TableCell
-                              className={`text-right ${
-                                (balances[p.id] || 0) >= 0
-                                  ? "text-emerald-700"
-                                  : "text-rose-700"
-                              }`}
-                            >
-                              {fmt(balances[p.id] || 0, event.currency)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </CardContent>
-                </Card>
-
-                <Card className="rounded-2xl">
-                  <CardHeader>
-                    <CardTitle>Liquidaciones sugeridas</CardTitle>
-                    <CardDescription>
-                      Para cerrar el chiringuito con el mínimo de pagos.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {settlements.length === 0 ? (
-                      <p className="text-sm text-neutral-600">
-                        Todo en paz. Nadie le debe nada a nadie. Milagro contable ✨
                       </p>
-                    ) : (
-                      <ul className="space-y-2">
-                        {settlements.map((t, idx) => {
-                          const from = event.participants.find((p) => p.id === t.from)?.name;
-                          const to = event.participants.find((p) => p.id === t.to)?.name;
-                          return (
-                            <li key={idx} className="text-sm">
-                              <span className="font-medium">{from}</span> → {" "}
-                              <span className="font-medium">{to}</span>: {fmt(t.amount, event.currency)}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
-
-              <Card className="rounded-2xl">
-                <CardHeader>
-                  <CardTitle>Gastos</CardTitle>
-                  <CardDescription>Registra quién pagó qué y para quién.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {event.expenses.length === 0 ? (
-                    <div className="text-sm text-neutral-600">
-                      Aún no hay gastos. ¡Estrena el botón "Añadir gasto"! 💸
                     </div>
-                  ) : (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Fecha</TableHead>
-                          <TableHead>Descripción</TableHead>
-                          <TableHead>Pagadores</TableHead>
-                          <TableHead className="text-right">Importe</TableHead>
-                          <TableHead>Propina</TableHead>
-                          <TableHead>Para</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {event.expenses.map((e) => {
-                          const payerLabel =
-                            e.payerMode === "single"
-                              ? event.participants.find((p) => p.id === e.payerId)?.name
-                              : (e.payerSplits || [])
-                                  .map(
-                                    (s) =>
-                                      `${event.participants.find((p) => p.id === s.payerId)?.name} (${fmt(
-                                        s.amount,
-                                        event.currency
-                                      )})`
-                                  )
-                                  .join(", ");
-                          const tipLabel = e.tipAmount
-                            ? `${fmt(e.tipAmount, event.currency)} — ${
-                                event.participants.find((p) => p.id === e.tipPayerId)?.name
-                              }`
-                            : "-";
-                          const names = e.participantIds
-                            .map((pid) => event.participants.find((p) => p.id === pid)?.name)
-                            .join(", ");
-                          return (
-                            <TableRow key={e.id}>
-                              <TableCell className="whitespace-nowrap">{e.date}</TableCell>
-                              <TableCell className="max-w-[24ch] truncate" title={e.description}>
-                                {e.description}
-                              </TableCell>
-                              <TableCell>{payerLabel}</TableCell>
-                              <TableCell className="text-right">{fmt(e.amount, event.currency)}</TableCell>
-                              <TableCell>{tipLabel}</TableCell>
-                              <TableCell className="max-w-[24ch] truncate" title={names}>
-                                {names}
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                      <TableCaption className="text-xs text-neutral-500">
-                        Consejo: exporta a CSV/JSON para compartir con el grupo.
-                      </TableCaption>
-                    </Table>
                   )}
-                </CardContent>
-              </Card>
-            </motion.div>
-          </AnimatePresence>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ----------------------- ADD EXPENSE DIALOG -----------------------
-function AddExpenseDialog({
-  event,
-  setEvent,
-  open,
-  setOpen,
-}: {
-  event: EventData;
-  setEvent: (ev: EventData) => void;
-  open: boolean;
-  setOpen: (v: boolean) => void;
-}) {
-  const [amount, setAmount] = useState<string>("");
-  const [tip, setTip] = useState<string>("");
-  const [desc, setDesc] = useState("");
-  const [date, setDate] = useState(todayISO());
-  const [payerMode, setPayerMode] = useState<"single" | "multi">("single");
-  const [payerId, setPayerId] = useState(event.participants[0]?.id || "");
-  const [tipPayerId, setTipPayerId] = useState(event.participants[0]?.id || "");
-  const [payerSplits, setPayerSplits] = useState<{ payerId: string; amount: string }[]>([]);
-  const [selected, setSelected] = useState<string[]>(event.participants.map((p) => p.id));
-  const [note, setNote] = useState("");
-
-  useEffect(() => {
-    setSelected(event.participants.map((p) => p.id));
-    setPayerId(event.participants[0]?.id || "");
-    setTipPayerId(event.participants[0]?.id || "");
-    setDate(todayISO());
-    setAmount("");
-    setDesc("");
-    setNote("");
-    setTip("");
-    setPayerMode("single");
-    setPayerSplits([]);
-  }, [open, event.participants]);
-
-  const toggleSelectAll = (all: boolean) => {
-    setSelected(all ? event.participants.map((p) => p.id) : []);
-  };
-
-  const toggleParticipant = (pid: string) => {
-    setSelected((prev) =>
-      prev.includes(pid) ? prev.filter((x) => x !== pid) : [...prev, pid]
-    );
-  };
-
-  const addSplitRow = () => {
-    setPayerSplits((prev) => [
-      ...prev,
-      { payerId: event.participants[0]?.id || "", amount: "" },
-    ]);
-  };
-
-  const removeSplitRow = (idx: number) => {
-    setPayerSplits((prev) => prev.filter((_, i) => i !== idx));
-  };
-
-  const submit = () => {
-    const base = parseFloat(amount.replace(",", "."));
-    const tipVal = parseFloat((tip || "0").replace(",", ".")) || 0;
-    if (!(base > 0)) return alert("Pon un importe mayor que 0");
-    if (!desc.trim()) return alert("Describe el gasto (ej.: Café de especialidad)");
-    if (selected.length === 0) return alert("Selecciona al menos 1 participante");
-
-    let payerModeValue: "single" | "multi" = payerMode;
-    let payerIdValue: string | undefined = undefined;
-    let payerSplitsValue: { payerId: string; amount: number }[] | undefined = undefined;
-
-    if (payerMode === "single") {
-      payerIdValue = payerId;
-    } else {
-      const parsedSplits = payerSplits.map((r) => ({
-        payerId: r.payerId,
-        amount: parseFloat((r.amount || "0").replace(",", ".")) || 0,
-      }));
-      const sum = parsedSplits.reduce((a, b) => a + b.amount, 0);
-      if (Math.abs(sum - base) > 0.01) {
-        return alert(
-          `Las aportaciones de pagadores (${sum.toFixed(2)}) deben sumar el importe base (${base.toFixed(2)}).`
-        );
-      }
-      if (parsedSplits.some((s) => !s.payerId || s.amount <= 0)) {
-        return alert(
-          "Revisa las filas de pagadores: importes > 0 y pagador seleccionado."
-        );
-      }
-      payerSplitsValue = parsedSplits;
-    }
-
-    const expense: Expense = {
-      id: uid("e"),
-      description: desc.trim(),
-      amount: Math.round(base * 100) / 100,
-      payerMode: payerModeValue,
-      payerId: payerIdValue,
-      payerSplits: payerSplitsValue,
-      tipAmount: Math.round(tipVal * 100) / 100 || undefined,
-      tipPayerId: tipVal > 0 ? tipPayerId : undefined,
-      participantIds: [...selected],
-      date,
-      note: note.trim() || undefined,
-    };
-    setEvent({ ...event, expenses: [...event.expenses, expense] });
-    setOpen(false);
-  };
-
-  const base = parseFloat((amount || "0").replace(",", ".")) || 0;
-  const tipVal = parseFloat((tip || "0").replace(",", ".")) || 0;
-  const total = base + tipVal;
-  const involvedCount = Math.max(1, selected.length);
-  const perHead = total / involvedCount;
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button>
-          <Plus className="h-4 w-4 mr-2" />Añadir gasto
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-[720px]">
-        <DialogHeader>
-          <DialogTitle>Nuevo gasto</DialogTitle>
-        </DialogHeader>
-        <div className="grid md:grid-cols-2 gap-4 py-2">
-          <div className="space-y-2">
-            <Label>Importe ({event.currency})</Label>
-            <Input
-              inputMode="decimal"
-              placeholder="0,00"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Propina ({event.currency})</Label>
-            <Input
-              inputMode="decimal"
-              placeholder="0,00"
-              value={tip}
-              onChange={(e) => setTip(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Fecha</Label>
-            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          </div>
-          <div className="space-y-2 md:col-span-1">
-            <Label>Descripción</Label>
-            <Input
-              placeholder="Cena, peajes, cafés, entradas…"
-              value={desc}
-              onChange={(e) => setDesc(e.target.value)}
-            />
-          </div>
-
-          <div className="md:col-span-2 space-y-2">
-            <Label>¿Quién paga el importe base?</Label>
-            <div className="flex gap-3 text-sm">
-              <label className="inline-flex items-center gap-2">
-                <input
-                  type="radio"
-                  className="accent-black"
-                  checked={payerMode === "single"}
-                  onChange={() => setPayerMode("single")}
-                />
-                <span>Una persona</span>
-              </label>
-              <label className="inline-flex items-center gap-2">
-                <input
-                  type="radio"
-                  className="accent-black"
-                  checked={payerMode === "multi"}
-                  onChange={() => setPayerMode("multi")}
-                />
-                <span>Varios (repartido)</span>
-              </label>
-            </div>
-
-            {payerMode === "single" ? (
-              <div className="space-y-2">
-                <Label>Pagó</Label>
-                <Select value={payerId} onValueChange={setPayerId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Quién puso la pasta" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {event.participants.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label>
-                    Pagadores y aportes (deben sumar {fmt(base, event.currency)})
-                  </Label>
-                  <Button variant="outline" size="sm" onClick={addSplitRow}>
-                    Añadir pagador
-                  </Button>
                 </div>
-                <div className="space-y-2">
-                  {payerSplits.length === 0 && (
-                    <p className="text-xs text-neutral-500">
-                      Añade filas con cada persona que puso dinero para este gasto.
-                    </p>
-                  )}
-                  {payerSplits.map((row, idx) => (
-                    <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                      <div className="col-span-6">
-                        <Select
-                          value={row.payerId}
-                          onValueChange={(v) =>
-                            setPayerSplits((prev) =>
-                              prev.map((r, i) => (i === idx ? { ...r, payerId: v } : r))
-                            )
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Pagador" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {event.participants.map((p) => (
-                              <SelectItem key={p.id} value={p.id}>
-                                {p.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="col-span-5">
-                        <Input
-                          inputMode="decimal"
-                          placeholder="0,00"
-                          value={row.amount}
-                          onChange={(e) =>
-                            setPayerSplits((prev) =>
-                              prev.map((r, i) => (i === idx ? { ...r, amount: e.target.value } : r))
-                            )
-                          }
-                        />
-                      </div>
-                      <div className="col-span-1 text-right">
-                        <Button
-                          variant="destructive"
-                          size="icon"
-                          onClick={() => removeSplitRow(idx)}
-                        >
-                          ×
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <p
-                  className={`text-xs ${
-                    Math.abs(
-                      payerSplits.reduce(
-                        (a, b) => a + (parseFloat(b.amount.replace(",", ".") || "0") || 0),
-                        0
-                      ) - base
-                    ) < 0.01
-                      ? "text-emerald-600"
-                      : "text-rose-600"
-                  }`}
-                >
-                  Suma actual: {fmt(
-                    payerSplits.reduce(
-                      (a, b) => a + (parseFloat(b.amount.replace(",", ".") || "0") || 0),
-                      0
-                    ),
-                    event.currency
-                  )}
-                </p>
-              </div>
-            )}
-          </div>
 
-          <div className="space-y-2">
-            <Label>¿Quién paga la propina?</Label>
-            <Select value={tipPayerId} onValueChange={setTipPayerId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Selecciona pagador de la propina" />
-              </SelectTrigger>
-              <SelectContent>
-                {event.participants.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
-            <Label>Nota (opcional)</Label>
-            <Textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="Detalles, códigos de recibo…"
-            />
-          </div>
-
-          <div className="md:col-span-2">
-            <div className="flex items-center justify-between mb-2">
-              <Label>
-                Aplica a (quién lo disfrutó) — {involvedCount} personas → {fmt(perHead || 0, event.currency)} / cabeza
-              </Label>
-              <div className="flex gap-2 text-xs">
-                <Button variant="outline" size="sm" onClick={() => toggleSelectAll(true)}>
-                  Todos
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => toggleSelectAll(false)}>
-                  Ninguno
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setSelected([payerId])}>
-                  Solo pagador
-                </Button>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-              {event.participants.map((p) => (
-                <label key={p.id} className="flex items-center gap-2 rounded-lg border p-2">
-                  <Checkbox
-                    checked={selected.includes(p.id)}
-                    onCheckedChange={() => toggleParticipant(p.id)}
-                  />
-                  <span>{p.name}</span>
+                <label>¿Quién paga la propina?
+                  <select value={tipPayerId} onChange={e=>setTipPayerId(e.target.value)}>
+                    {event.participants.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
                 </label>
-              ))}
+
+                <label>Nota (opcional)
+                  <input placeholder="Detalles, códigos de recibo…" value={note} onChange={e=>setNote(e.target.value)} />
+                </label>
+
+                <div style={{gridColumn:"1 / -1"}}>
+                  <div className="row" style={{justifyContent:"space-between", marginBottom:8}}>
+                    <strong>Aplica a — {selected.length} personas → {fmt(perHead||0, event.currency)} / cabeza</strong>
+                    <div className="row">
+                      <button className="btn" onClick={()=>toggleSelectAll(true)}>Todos</button>
+                      <button className="btn" onClick={()=>toggleSelectAll(false)}>Ninguno</button>
+                      <button className="btn" onClick={()=>setSelected([payerId])}>Solo pagador</button>
+                    </div>
+                  </div>
+                  <div className="chips">
+                    {event.participants.map(p=> (
+                      <label key={p.id} className="chip">
+                        <input type="checkbox" checked={selected.includes(p.id)} onChange={()=>toggleParticipant(p.id)} /> {p.name}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{gridColumn:"1 / -1", display:"flex", gap:12, justifyContent:"flex-end"}}>
+                  <button className="btn" onClick={onClose}>Cancelar</button>
+                  <button className="btn primary" onClick={submit}>Guardar</button>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-        <DialogFooter>
-          <Button variant="secondary" onClick={() => setOpen(false)}>
-            Cancelar
-          </Button>
-          <Button onClick={submit}>Guardar</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
