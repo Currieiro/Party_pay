@@ -32,7 +32,7 @@
       .chip{border:1px solid var(--border);padding:6px 8px;border-radius:999px}
       .small{font-size:12px}
 
-      /* -------- Modal accesible y scrollable -------- */
+      /* Modal accesible y scrollable */
       .overlay{
         position:fixed; inset:0; background:rgba(0,0,0,.5);
         display:flex; justify-content:center; align-items:flex-start;
@@ -42,20 +42,17 @@
         max-width:720px; width:100%;
         background:#fff; border:1px solid var(--border); border-radius:var(--radius);
         display:flex; flex-direction:column;
-        max-height:90vh; /* clave: no excede viewport */
+        max-height:90vh;
       }
       .modal-header{
         padding:12px 16px; border-bottom:1px solid var(--border);
         display:flex; align-items:center; justify-content:space-between; gap:12px;
       }
       .modal-title{font-size:18px; margin:0}
-      .modal-body{
-        padding:16px; overflow:auto; /* clave: el contenido hace scroll */
-      }
+      .modal-body{ padding:16px; overflow:auto; }
       .modal-footer{
         padding:12px 16px; border-top:1px solid var(--border);
-        display:flex; gap:12px; justify-content:flex-end;
-        background:#fff; /* que no transparente al hacer scroll */
+        display:flex; gap:12px; justify-content:flex-end; background:#fff;
       }
       .grid-2-narrow{display:grid; gap:var(--gap); grid-template-columns: repeat(2, minmax(0,1fr));}
       @media (max-width: 700px){ .grid-2-narrow{grid-template-columns: 1fr;} }
@@ -64,16 +61,38 @@
   <body>
     <div id="root"></div>
 
-    <!-- React 18 UMD + Babel para JSX en el navegador (solo para demo). -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- App completa -->
     <script type="text/babel">
       const { useState, useMemo, useEffect } = React;
 
-      // -------- Utils
+      // ---------- Storage helpers
+      const LAST_KEY = "partipay:last";
+      const eventKey = (id) => `partipay:${id}`;
+
+      const saveEvent = (ev) => {
+        const key = eventKey(ev.id);
+        localStorage.setItem(key, JSON.stringify(ev));
+        localStorage.setItem(LAST_KEY, key);
+      };
+      const loadLastEvent = () => {
+        const last = localStorage.getItem(LAST_KEY);
+        if(!last) return null;
+        const raw = localStorage.getItem(last);
+        if(!raw) return null;
+        try { return JSON.parse(raw); } catch { return null; }
+      };
+      const deleteEventFromStorage = (id) => {
+        try { localStorage.removeItem(eventKey(id)); } catch {}
+        try {
+          const last = localStorage.getItem(LAST_KEY);
+          if(last === eventKey(id)) localStorage.removeItem(LAST_KEY);
+        } catch {}
+      };
+
+      // ---------- Utils
       const currencies = ["EUR","USD","GBP","MXN","COP","ARS","CLP","PEN"];
       const uid = (p="id") => `${p}_${Math.random().toString(36).slice(2,10)}`;
       const todayISO = () => new Date().toISOString().slice(0,10);
@@ -89,7 +108,7 @@
         document.body.appendChild(a); a.click(); a.remove();
       }
 
-      // -------- Cálculos
+      // ---------- Cálculos
       function computeBalances(event){
         const map = {}; event.participants.forEach(p => map[p.id] = 0);
         for(const e of event.expenses){
@@ -128,7 +147,7 @@
         return txs;
       }
 
-      // -------- App
+      // ---------- App
       function App(){
         const [step, setStep] = useState("setup");
         const [eventName, setEventName] = useState("");
@@ -138,28 +157,20 @@
         const [event, setEvent] = useState(null);
         const [openExpense, setOpenExpense] = useState(false);
 
-        // Carga
+        // Carga inicial (persistencia)
         useEffect(()=>{
-          const lastKey = localStorage.getItem("partipay:last");
-          if(lastKey){
-            const raw = localStorage.getItem(lastKey);
-            if(raw){
-              try{
-                const parsed = JSON.parse(raw);
-                setEvent(parsed); setStep("event");
-                setEventName(parsed.name); setCurrency(parsed.currency || "EUR");
-              }catch{}
-            }
+          const loaded = loadLastEvent();
+          if(loaded){
+            setEvent(loaded);
+            setStep("event");
+            setEventName(loaded.name || "");
+            setCurrency(loaded.currency || "EUR");
           }
         },[]);
 
-        // Persistencia
+        // Persistencia automática
         useEffect(()=>{
-          if(event){
-            const key = `partipay:${event.id}`;
-            localStorage.setItem(key, JSON.stringify(event));
-            localStorage.setItem("partipay:last", key);
-          }
+          if(event) saveEvent(event);
         }, [event]);
 
         const balances = useMemo(()=> event ? computeBalances(event) : {}, [event]);
@@ -179,12 +190,21 @@
           const ev = { id, name: eventName.trim(), currency, participants: parts, expenses: [], createdAt: new Date().toISOString() };
           setEvent(ev); setStep("event");
         };
-        const resetAll = () => {
+
+        // RESET: borra el evento completo (localStorage + estado) con confirmación
+        const hardReset = () => {
           if(!event) return;
-          if(confirm("¿Seguro que quieres borrar todos los gastos?")){
-            setEvent({ ...event, expenses: [] });
+          if(confirm("¿Seguro que quieres borrar todo el evento? Esta acción no se puede deshacer.")){
+            deleteEventFromStorage(event.id);
+            setEvent(null);
+            setStep("setup");
+            setEventName("");
+            setCurrency("EUR");
+            setNumParticipants(2);
+            setParticipantsDraft([]);
           }
         };
+
         const exportJSON = () => {
           if(!event) return;
           download(`${event.id}.json`, JSON.stringify(event, null, 2));
@@ -288,7 +308,7 @@
                       <label className="btn">Importar
                         <input type="file" accept="application/json" style={{display:"none"}} onChange={e=>{ const f=e.target.files?.[0]; if(f) importJSON(f); }}/>
                       </label>
-                      <button className="btn danger" onClick={resetAll}>Reset</button>
+                      <button className="btn danger" onClick={hardReset}>Reset</button>
                     </div>
                   </div>
                 </div>
@@ -431,9 +451,9 @@
             tipPayerId: tipVal>0 ? tipPayerId : undefined,
             participantIds: [...selected],
             date,
-            note: note.trim() || undefined,
+            note: (note||"").trim() || undefined,
           };
-          setEvent({ ...event, expenses: [...event.expenses, expense] });
+          setEvent(prev => ({ ...prev, expenses: [...prev.expenses, expense] }));
           onClose();
         };
 
@@ -514,7 +534,7 @@
 
                 <div style={{marginTop:12}}>
                   <div className="row" style={{justifyContent:"space-between", marginBottom:8}}>
-                    <strong>Aplica a — {selected.length} personas → {fmt(selected.length? ( (parseFloat(amount||"0") + parseFloat(tip||"0"))/selected.length ) : 0, event.currency)} / cabeza</strong>
+                    <strong>Aplica a — {selected.length} personas → {fmt(perHead||0, event.currency)} / cabeza</strong>
                     <div className="row">
                       <button className="btn" onClick={()=>setSelected(event.participants.map(p=>p.id))}>Todos</button>
                       <button className="btn" onClick={()=>setSelected([])}>Ninguno</button>
@@ -524,52 +544,18 @@
                   <div className="chips">
                     {event.participants.map(p=> (
                       <label key={p.id} className="chip">
-                        <input type="checkbox" checked={selected.includes(p.id)} onChange={()=> setSelected(prev => prev.includes(p.id) ? prev.filter(x=>x!==p.id) : [...prev, p.id]) } /> {p.name}
+                        <input type="checkbox" checked={selected.includes(p.id)} onChange={()=>
+                          setSelected(prev => prev.includes(p.id) ? prev.filter(x=>x!==p.id) : [...prev, p.id])
+                        } /> {p.name}
                       </label>
                     ))}
                   </div>
                 </div>
               </div>
 
-              <!-- Footer siempre visible -->
               <div className="modal-footer">
                 <button className="btn" onClick={onClose}>Cancelar</button>
-                <button className="btn primary" onClick={()=>{
-                  const base = parseFloat((amount||"0").replace(",", ".")) || 0;
-                  const tipVal = parseFloat((tip||"0").replace(",", ".")) || 0;
-                  if(!(base>0)) return alert("Pon un importe mayor que 0");
-                  if(!desc.trim()) return alert("Describe el gasto");
-                  if(selected.length===0) return alert("Selecciona al menos 1 participante");
-
-                  let payerIdValue = undefined;
-                  let payerSplitsValue = undefined;
-
-                  if(payerMode==='single'){
-                    payerIdValue = payerId;
-                  }else{
-                    const parsed = payerSplits.map(r=>({ payerId: r.payerId, amount: parseFloat((r.amount||"0").replace(",", ".")) || 0 }));
-                    const sum = parsed.reduce((a,b)=>a+b.amount,0);
-                    if(Math.abs(sum - base) > 0.01) return alert(`Las aportaciones (${sum.toFixed(2)}) deben sumar el importe base (${base.toFixed(2)})`);
-                    if(parsed.some(s=>!s.payerId || s.amount<=0)) return alert("Revisa filas: importes > 0 y pagador seleccionado.");
-                    payerSplitsValue = parsed;
-                  }
-
-                  const expense = {
-                    id: uid("e"),
-                    description: desc.trim(),
-                    amount: Math.round(base*100)/100,
-                    payerMode,
-                    payerId: payerIdValue,
-                    payerSplits: payerSplitsValue,
-                    tipAmount: Math.round(tipVal*100)/100 || undefined,
-                    tipPayerId: tipVal>0 ? tipPayerId : undefined,
-                    participantIds: [...selected],
-                    date,
-                    note: (note||"").trim() || undefined,
-                  };
-                  setEvent(prev => ({ ...prev, expenses: [...prev.expenses, expense] }));
-                  onClose();
-                }}>Guardar</button>
+                <button className="btn primary" onClick={submit}>Guardar</button>
               </div>
             </div>
           </div>
