@@ -2,10 +2,7 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1"
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="PartiPay – App de compartir gastos" />
     <title>PartiPay (1 archivo)</title>
     <style>
@@ -20,7 +17,7 @@
       .card{background:#fff;border:1px solid var(--border);border-radius:var(--radius)}
       .card-h{padding:16px 16px 0}
       .card-c{padding:16px}
-      .row{display:flex; gap:var(--gap); align-items:center}
+      .row{display:flex; gap:var(--gap); align-items:center; flex-wrap:wrap}
       input, select, textarea, button{font:inherit}
       input, select, textarea{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:#fff}
       table{width:100%;border-collapse:collapse}
@@ -34,9 +31,34 @@
       .chips{display:flex; gap:6px; flex-wrap:wrap}
       .chip{border:1px solid var(--border);padding:6px 8px;border-radius:999px}
       .small{font-size:12px}
-      /* modal */
-      .overlay{position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:flex-start; justify-content:center; padding:48px 16px; z-index:10}
-      .modal{max-width:720px; width:100%}
+
+      /* -------- Modal accesible y scrollable -------- */
+      .overlay{
+        position:fixed; inset:0; background:rgba(0,0,0,.5);
+        display:flex; justify-content:center; align-items:flex-start;
+        padding:24px 12px; z-index:10; overflow:auto;
+      }
+      .modal{
+        max-width:720px; width:100%;
+        background:#fff; border:1px solid var(--border); border-radius:var(--radius);
+        display:flex; flex-direction:column;
+        max-height:90vh; /* clave: no excede viewport */
+      }
+      .modal-header{
+        padding:12px 16px; border-bottom:1px solid var(--border);
+        display:flex; align-items:center; justify-content:space-between; gap:12px;
+      }
+      .modal-title{font-size:18px; margin:0}
+      .modal-body{
+        padding:16px; overflow:auto; /* clave: el contenido hace scroll */
+      }
+      .modal-footer{
+        padding:12px 16px; border-top:1px solid var(--border);
+        display:flex; gap:12px; justify-content:flex-end;
+        background:#fff; /* que no transparente al hacer scroll */
+      }
+      .grid-2-narrow{display:grid; gap:var(--gap); grid-template-columns: repeat(2, minmax(0,1fr));}
+      @media (max-width: 700px){ .grid-2-narrow{grid-template-columns: 1fr;} }
     </style>
   </head>
   <body>
@@ -47,11 +69,11 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- Tu app completa en JSX -->
+    <!-- App completa -->
     <script type="text/babel">
       const { useState, useMemo, useEffect } = React;
 
-      // --------- Utils
+      // -------- Utils
       const currencies = ["EUR","USD","GBP","MXN","COP","ARS","CLP","PEN"];
       const uid = (p="id") => `${p}_${Math.random().toString(36).slice(2,10)}`;
       const todayISO = () => new Date().toISOString().slice(0,10);
@@ -67,36 +89,26 @@
         document.body.appendChild(a); a.click(); a.remove();
       }
 
-      // --------- Cálculos
+      // -------- Cálculos
       function computeBalances(event){
-        const map = {};
-        event.participants.forEach(p => map[p.id] = 0);
-
+        const map = {}; event.participants.forEach(p => map[p.id] = 0);
         for(const e of event.expenses){
           const involved = e.participantIds.length>0 ? e.participantIds : event.participants.map(p=>p.id);
           const total = (e.amount||0) + (e.tipAmount||0);
           const share = total / involved.length;
-
           if(e.payerMode === "multi" && e.payerSplits?.length){
-            for(const s of e.payerSplits){
-              map[s.payerId] = (map[s.payerId]||0) + s.amount;
-            }
+            for(const s of e.payerSplits){ map[s.payerId] = (map[s.payerId]||0) + s.amount; }
           } else if(e.payerId){
             map[e.payerId] = (map[e.payerId]||0) + (e.amount||0);
           }
-
           if(e.tipAmount && e.tipAmount>0 && e.tipPayerId){
             map[e.tipPayerId] = (map[e.tipPayerId]||0) + e.tipAmount;
           }
-
-          for(const pid of involved){
-            map[pid] = (map[pid]||0) - share;
-          }
+          for(const pid of involved){ map[pid] = (map[pid]||0) - share; }
         }
         Object.keys(map).forEach(k => map[k] = Math.round(map[k]*100)/100);
         return map;
       }
-
       function settleDebts(balances){
         const debtors = [], creditors = [];
         Object.entries(balances).forEach(([id, amt])=>{
@@ -105,22 +117,20 @@
         });
         debtors.sort((a,b)=>b.amount-a.amount);
         creditors.sort((a,b)=>b.amount-a.amount);
-        const txs = [];
-        let i=0,j=0;
+        const txs = []; let i=0,j=0;
         while(i<debtors.length && j<creditors.length){
           const d=debtors[i], c=creditors[j];
           const pay = Math.min(d.amount, c.amount);
           txs.push({ from:d.id, to:c.id, amount: Math.round(pay*100)/100 });
           d.amount -= pay; c.amount -= pay;
-          if(d.amount <= 0.009) i++;
-          if(c.amount <= 0.009) j++;
+          if(d.amount <= 0.009) i++; if(c.amount <= 0.009) j++;
         }
         return txs;
       }
 
-      // --------- App
+      // -------- App
       function App(){
-        const [step, setStep] = useState("setup"); // 'setup' | 'participants' | 'event'
+        const [step, setStep] = useState("setup");
         const [eventName, setEventName] = useState("");
         const [currency, setCurrency] = useState("EUR");
         const [numParticipants, setNumParticipants] = useState(2);
@@ -128,7 +138,7 @@
         const [event, setEvent] = useState(null);
         const [openExpense, setOpenExpense] = useState(false);
 
-        // Carga desde localStorage
+        // Carga
         useEffect(()=>{
           const lastKey = localStorage.getItem("partipay:last");
           if(lastKey){
@@ -137,8 +147,7 @@
               try{
                 const parsed = JSON.parse(raw);
                 setEvent(parsed); setStep("event");
-                setEventName(parsed.name);
-                setCurrency(parsed.currency || "EUR");
+                setEventName(parsed.name); setCurrency(parsed.currency || "EUR");
               }catch{}
             }
           }
@@ -156,13 +165,11 @@
         const balances = useMemo(()=> event ? computeBalances(event) : {}, [event]);
         const settlements = useMemo(()=> event ? settleDebts(balances) : [], [event, balances]);
 
-        // Setup
         const handleSetupNext = () => {
           const n = Math.max(1, Math.min(20, parseInt(numParticipants||1,10)));
           setParticipantsDraft(Array.from({length:n}, (_,i)=>`P${i+1}`));
           setStep("participants");
         };
-
         const handleCreateEvent = () => {
           const cleanNames = participantsDraft.map(s=>s.trim()).filter(Boolean);
           if(!eventName.trim()) return alert("Ponle nombre al evento ✍️");
@@ -172,19 +179,16 @@
           const ev = { id, name: eventName.trim(), currency, participants: parts, expenses: [], createdAt: new Date().toISOString() };
           setEvent(ev); setStep("event");
         };
-
         const resetAll = () => {
           if(!event) return;
           if(confirm("¿Seguro que quieres borrar todos los gastos?")){
             setEvent({ ...event, expenses: [] });
           }
         };
-
         const exportJSON = () => {
           if(!event) return;
           download(`${event.id}.json`, JSON.stringify(event, null, 2));
         };
-
         const exportCSV = () => {
           if(!event) return;
           const rows = [
@@ -204,7 +208,6 @@
           const csv = rows.map(r=>r.join(",")).join("\n");
           download(event.id + ".csv", csv, "text/csv");
         };
-
         const importJSON = (file) => {
           const reader = new FileReader();
           reader.onload = () => {
@@ -273,7 +276,7 @@
             {step === "event" && event && (
               <div className="grid">
                 <div className="card">
-                  <div className="card-c row" style={{justifyContent:"space-between", alignItems:"center", flexWrap:"wrap"}}>
+                  <div className="card-c row" style={{justifyContent:"space-between", alignItems:"center"}}>
                     <div>
                       <div><strong>Evento:</strong> {event.name}</div>
                       <div className="muted small">Moneda: {event.currency} • Participantes: {event.participants.length} • Gastos: {event.expenses.length}</div>
@@ -382,10 +385,10 @@
         const [tip, setTip] = useState("");
         const [desc, setDesc] = useState("");
         const [date, setDate] = useState(todayISO());
-        const [payerMode, setPayerMode] = useState("single"); // 'single' | 'multi'
+        const [payerMode, setPayerMode] = useState("single");
         const [payerId, setPayerId] = useState(event.participants[0]?.id || "");
         const [tipPayerId, setTipPayerId] = useState(event.participants[0]?.id || "");
-        const [payerSplits, setPayerSplits] = useState([]); // [{payerId,amount}]
+        const [payerSplits, setPayerSplits] = useState([]); // [{payerId, amount}]
         const [selected, setSelected] = useState(event.participants.map(p=>p.id));
         const [note, setNote] = useState("");
 
@@ -396,7 +399,6 @@
 
         const addSplitRow = () => setPayerSplits(prev=>[...prev, { payerId: event.participants[0]?.id || "", amount: "" }]);
         const removeSplitRow = (idx) => setPayerSplits(prev=>prev.filter((_,i)=>i!==idx));
-
         const toggleSelectAll = (all) => setSelected(all ? event.participants.map(p=>p.id) : []);
         const toggleParticipant = (pid) => setSelected(prev => prev.includes(pid) ? prev.filter(x=>x!==pid) : [...prev, pid]);
 
@@ -405,11 +407,10 @@
           if(!desc.trim()) return alert("Describe el gasto");
           if(selected.length===0) return alert("Selecciona al menos 1 participante");
 
-          let mode = payerMode;
           let payerIdValue = undefined;
           let payerSplitsValue = undefined;
 
-          if(mode==='single'){
+          if(payerMode==='single'){
             payerIdValue = payerId;
           }else{
             const parsed = payerSplits.map(r=>({ payerId: r.payerId, amount: parseFloat((r.amount||"0").replace(",", ".")) || 0 }));
@@ -423,7 +424,7 @@
             id: uid("e"),
             description: desc.trim(),
             amount: Math.round(base*100)/100,
-            payerMode: mode,
+            payerMode,
             payerId: payerIdValue,
             payerSplits: payerSplitsValue,
             tipAmount: Math.round(tipVal*100)/100 || undefined,
@@ -438,39 +439,42 @@
 
         return (
           <div className="overlay" onClick={(e)=>{ if(e.target===e.currentTarget) onClose(); }}>
-            <div className="modal card" onClick={(e)=>e.stopPropagation()}>
-              <div className="card-h row" style={{justifyContent:"space-between"}}>
-                <h3>Nuevo gasto</h3>
-                <button className="btn" onClick={onClose}>Cerrar</button>
+            <div className="modal" role="dialog" aria-modal="true" aria-labelledby="new-expense-title" onClick={(e)=>e.stopPropagation()}>
+              <div className="modal-header">
+                <h3 id="new-expense-title" className="modal-title">Nuevo gasto</h3>
+                <button className="btn" onClick={onClose} aria-label="Cerrar">Cerrar</button>
               </div>
-              <div className="card-c grid grid-2">
-                <label>Importe ({event.currency})
-                  <input inputMode="decimal" placeholder="0,00" value={amount} onChange={e=>setAmount(e.target.value)} />
-                </label>
-                <label>Propina ({event.currency})
-                  <input inputMode="decimal" placeholder="0,00" value={tip} onChange={e=>setTip(e.target.value)} />
-                </label>
-                <label>Fecha
-                  <input type="date" value={date} onChange={e=>setDate(e.target.value)} />
-                </label>
-                <label style={{gridColumn:"1 / -1"}}>Descripción
-                  <input placeholder="Cena, peajes, cafés, entradas…" value={desc} onChange={e=>setDesc(e.target.value)} />
-                </label>
 
-                <div style={{gridColumn:"1 / -1"}}>
+              <div className="modal-body">
+                <div className="grid-2-narrow">
+                  <label>Importe ({event.currency})
+                    <input inputMode="decimal" placeholder="0,00" value={amount} onChange={e=>setAmount(e.target.value)} />
+                  </label>
+                  <label>Propina ({event.currency})
+                    <input inputMode="decimal" placeholder="0,00" value={tip} onChange={e=>setTip(e.target.value)} />
+                  </label>
+                  <label>Fecha
+                    <input type="date" value={date} onChange={e=>setDate(e.target.value)} />
+                  </label>
+                  <label style={{gridColumn:"1 / -1"}}>Descripción
+                    <input placeholder="Cena, peajes, cafés, entradas…" value={desc} onChange={e=>setDesc(e.target.value)} />
+                  </label>
+                </div>
+
+                <div style={{marginTop:12}}>
                   <div className="row" style={{gap:16}}>
                     <label className="row"><input type="radio" checked={payerMode==='single'} onChange={()=>setPayerMode('single')} /> Una persona</label>
                     <label className="row"><input type="radio" checked={payerMode==='multi'} onChange={()=>setPayerMode('multi')} /> Varios (repartido)</label>
                   </div>
 
                   {payerMode==='single' ? (
-                    <label>Pagó
+                    <label style={{marginTop:8}}>Pagó
                       <select value={payerId} onChange={e=>setPayerId(e.target.value)}>
                         {event.participants.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
                     </label>
                   ) : (
-                    <div className="grid" style={{gap:8}}>
+                    <div className="grid" style={{gap:8, marginTop:8}}>
                       <div className="row" style={{justifyContent:"space-between"}}>
                         <strong>Pagadores y aportes (deben sumar {fmt(parseFloat(amount||"0")||0, event.currency)})</strong>
                         <button className="btn" onClick={addSplitRow}>Añadir pagador</button>
@@ -497,38 +501,75 @@
                   )}
                 </div>
 
-                <label>¿Quién paga la propina?
-                  <select value={tipPayerId} onChange={e=>setTipPayerId(e.target.value)}>
-                    {event.participants.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                </label>
+                <div className="grid-2-narrow" style={{marginTop:12}}>
+                  <label>¿Quién paga la propina?
+                    <select value={tipPayerId} onChange={e=>setTipPayerId(e.target.value)}>
+                      {event.participants.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </label>
+                  <label>Nota (opcional)
+                    <input placeholder="Detalles, códigos de recibo…" value={note} onChange={e=>setNote(e.target.value)} />
+                  </label>
+                </div>
 
-                <label>Nota (opcional)
-                  <input placeholder="Detalles, códigos de recibo…" value={note} onChange={e=>setNote(e.target.value)} />
-                </label>
-
-                <div style={{gridColumn:"1 / -1"}}>
+                <div style={{marginTop:12}}>
                   <div className="row" style={{justifyContent:"space-between", marginBottom:8}}>
-                    <strong>Aplica a — {selected.length} personas → {fmt(perHead||0, event.currency)} / cabeza</strong>
+                    <strong>Aplica a — {selected.length} personas → {fmt(selected.length? ( (parseFloat(amount||"0") + parseFloat(tip||"0"))/selected.length ) : 0, event.currency)} / cabeza</strong>
                     <div className="row">
-                      <button className="btn" onClick={()=>toggleSelectAll(true)}>Todos</button>
-                      <button className="btn" onClick={()=>toggleSelectAll(false)}>Ninguno</button>
+                      <button className="btn" onClick={()=>setSelected(event.participants.map(p=>p.id))}>Todos</button>
+                      <button className="btn" onClick={()=>setSelected([])}>Ninguno</button>
                       <button className="btn" onClick={()=>setSelected([payerId])}>Solo pagador</button>
                     </div>
                   </div>
                   <div className="chips">
                     {event.participants.map(p=> (
                       <label key={p.id} className="chip">
-                        <input type="checkbox" checked={selected.includes(p.id)} onChange={()=>toggleParticipant(p.id)} /> {p.name}
+                        <input type="checkbox" checked={selected.includes(p.id)} onChange={()=> setSelected(prev => prev.includes(p.id) ? prev.filter(x=>x!==p.id) : [...prev, p.id]) } /> {p.name}
                       </label>
                     ))}
                   </div>
                 </div>
+              </div>
 
-                <div style={{gridColumn:"1 / -1", display:"flex", gap:12, justifyContent:"flex-end"}}>
-                  <button className="btn" onClick={onClose}>Cancelar</button>
-                  <button className="btn primary" onClick={submit}>Guardar</button>
-                </div>
+              <!-- Footer siempre visible -->
+              <div className="modal-footer">
+                <button className="btn" onClick={onClose}>Cancelar</button>
+                <button className="btn primary" onClick={()=>{
+                  const base = parseFloat((amount||"0").replace(",", ".")) || 0;
+                  const tipVal = parseFloat((tip||"0").replace(",", ".")) || 0;
+                  if(!(base>0)) return alert("Pon un importe mayor que 0");
+                  if(!desc.trim()) return alert("Describe el gasto");
+                  if(selected.length===0) return alert("Selecciona al menos 1 participante");
+
+                  let payerIdValue = undefined;
+                  let payerSplitsValue = undefined;
+
+                  if(payerMode==='single'){
+                    payerIdValue = payerId;
+                  }else{
+                    const parsed = payerSplits.map(r=>({ payerId: r.payerId, amount: parseFloat((r.amount||"0").replace(",", ".")) || 0 }));
+                    const sum = parsed.reduce((a,b)=>a+b.amount,0);
+                    if(Math.abs(sum - base) > 0.01) return alert(`Las aportaciones (${sum.toFixed(2)}) deben sumar el importe base (${base.toFixed(2)})`);
+                    if(parsed.some(s=>!s.payerId || s.amount<=0)) return alert("Revisa filas: importes > 0 y pagador seleccionado.");
+                    payerSplitsValue = parsed;
+                  }
+
+                  const expense = {
+                    id: uid("e"),
+                    description: desc.trim(),
+                    amount: Math.round(base*100)/100,
+                    payerMode,
+                    payerId: payerIdValue,
+                    payerSplits: payerSplitsValue,
+                    tipAmount: Math.round(tipVal*100)/100 || undefined,
+                    tipPayerId: tipVal>0 ? tipPayerId : undefined,
+                    participantIds: [...selected],
+                    date,
+                    note: (note||"").trim() || undefined,
+                  };
+                  setEvent(prev => ({ ...prev, expenses: [...prev.expenses, expense] }));
+                  onClose();
+                }}>Guardar</button>
               </div>
             </div>
           </div>
